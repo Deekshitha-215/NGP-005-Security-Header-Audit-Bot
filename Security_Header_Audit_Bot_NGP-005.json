@@ -1,0 +1,543 @@
+{
+  "name": "Security_Header_Audit_Bot_NGP-005",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        -2192,
+        16
+      ],
+      "id": "0fe7a254-f7ad-4068-855f-11861e1f3f22",
+      "name": "Telegram Trigger",
+      "webhookId": "108abb1a-5f8a-484d-8b72-d679c5236cbf",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxv8dWkQjbwOqEHI",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; NGP-005-HeaderAuditor/1.0)"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -1872,
+        176
+      ],
+      "id": "28987583-a81d-4fb1-b348-6181e016f1b7",
+      "name": "HTTP Request",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $json;\nconst validation = $(\"Validate URL — NGP-005\").first().json;\n\n// Normalise header names to lowercase\nconst headers = {};\nfor (const [k, v] of Object.entries(input.headers ?? {})) {\n  headers[String(k).toLowerCase()] = v;\n}\nconst reachable = Object.keys(headers).length > 0;\n\nconst requiredHeaders = [\n  {\n    name: \"Content-Security-Policy\",\n    key: \"content-security-policy\",\n    fix: \"Add a Content-Security-Policy that restricts scripts, styles, images, and other resource sources.\"\n  },\n  {\n    name: \"Strict-Transport-Security\",\n    key: \"strict-transport-security\",\n    fix: \"Serve the site over HTTPS and configure Strict-Transport-Security with an appropriate max-age.\"\n  },\n  {\n    name: \"X-Frame-Options\",\n    key: \"x-frame-options\",\n    fix: \"Set X-Frame-Options to DENY or SAMEORIGIN to reduce clickjacking risk.\"\n  },\n  {\n    name: \"X-Content-Type-Options\",\n    key: \"x-content-type-options\",\n    fix: \"Set X-Content-Type-Options: nosniff to prevent MIME-type sniffing.\"\n  },\n  {\n    name: \"Referrer-Policy\",\n    key: \"referrer-policy\",\n    fix: \"Set Referrer-Policy to strict-origin-when-cross-origin or a stricter suitable policy.\"\n  }\n];\n\nconst headerResults = requiredHeaders.map(header => {\n  const value = headers[header.key];\n  const present = value !== undefined && value !== null && String(value).trim() !== \"\";\n  return {\n    header: header.name,\n    present,\n    value: present ? String(value).slice(0, 200) : \"Missing\",\n    fix: present ? \"\" : header.fix\n  };\n});\n\nconst score = headerResults.filter(item => item.present).length;\n\nreturn {\n  json: {\n    chatId: validation.chatId,\n    url: validation.url,\n    note: validation.note ?? \"\",\n    auditTag: \"NGP-005\",\n    statusCode: input.statusCode ?? null,\n    reachable,\n    headerResults,\n    score,\n    total: requiredHeaders.length,\n    verdict: score === 5 ? \"PASS\" : \"FAIL\",\n    summary: `${score}/5 security headers present.`\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1728,
+        16
+      ],
+      "id": "f2c19fa2-090d-4ef3-a2f0-09a0b1503d9c",
+      "name": "Audit Security Headers — NGP-005"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $json;\n\nconst message = String(input.message?.text ?? input.text ?? \"\").trim();\nconst chatId = input.message?.chat?.id ?? input.chat?.id ?? input.chatId;\n\n// ---- Config ----\nconst DEFAULT_URL = \"http://demo.testfire.net\";   // approved practice target\nconst ALLOW_ANY_PUBLIC_URL = true;                // false = only allowedOrigins below\nconst allowedOrigins = [\"http://demo.testfire.net\"];\n\n// ---- Extract a URL from the Telegram message ----\nconst md = message.match(/\\]\\((https?:\\/\\/[^)\\s]+)\\)/);          // [text](url)\nconst plain = message.match(/https?:\\/\\/[^\\s<>()\\[\\]]+/i);       // plain http(s) URL\nlet candidate = md ? md[1] : plain ? plain[0] : \"\";\n\nif (!candidate && /^[a-z0-9-]+(\\.[a-z0-9-]+)+(\\/\\S*)?$/i.test(message)) {\n  candidate = \"https://\" + message;                              // bare domain\n}\n\ncandidate = candidate.replace(/[.,;!?]+$/, \"\");\nconst hostMatch = candidate.match(/^https?:\\/\\/([^\\/:?#]+)/i);\nconst host = hostMatch ? hostMatch[1].toLowerCase() : \"\";\n\n// ---- Block internal / private targets (SSRF protection) ----\nconst isPrivateHost = (h) =>\n  h === \"localhost\" ||\n  h.endsWith(\".local\") ||\n  h.endsWith(\".internal\") ||\n  /^127\\./.test(h) ||\n  /^10\\./.test(h) ||\n  /^0\\./.test(h) ||\n  /^192\\.168\\./.test(h) ||\n  /^169\\.254\\./.test(h) ||\n  /^172\\.(1[6-9]|2\\d|3[01])\\./.test(h) ||\n  h.includes(\":\") ||\n  !h.includes(\".\");\n\nlet url = DEFAULT_URL;\nlet note = \"\";\n\nif (!candidate) {\n  note = \"No URL found in your message, so the default practice URL was audited.\";\n} else if (isPrivateHost(host)) {\n  note = \"That target is internal/private and was blocked, so the default practice URL was audited.\";\n} else if (!ALLOW_ANY_PUBLIC_URL && !allowedOrigins.some(o => candidate.toLowerCase().startsWith(o))) {\n  note = \"That URL is not on the approved list, so the default practice URL was audited.\";\n} else {\n  url = candidate;\n}\n\nreturn {\n  json: {\n    chatId,\n    receivedText: message,\n    url,\n    allowed: true,\n    note,\n    reason: note || \"Requested URL accepted.\",\n    tag: \"NGP-005\"\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2016,
+        16
+      ],
+      "id": "b8f455a0-8361-4dc6-a0af-c7355772805e",
+      "name": "Validate URL — NGP-005"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify({ url: $json.url, reachable: $json.reachable, score: $json.score, total: $json.total, verdict: $json.verdict, headerResults: $json.headerResults.map(h => ({ header: h.header, present: h.present, fix: h.fix })) }) }}",
+        "options": {
+          "systemMessage": "You are a cybersecurity assistant for a defensive security-header audit.\n\nYou will receive JSON containing the URL, security-header results, score, and verdict.\n\nYour task:\n1. Explain each missing security header in simple language.\n2. Give one short, practical fix for each missing header.\n3. Only discuss the five headers provided in the input.\n4. Do not change or recalculate the score, verdict, or header status.\n5. Do not claim a header is missing unless the input says it is missing.\n6. Keep the response under 1000 characters.\n7. If all headers are present, say that all five security headers are present.\n8. If reachable is false, say the site could not be reached and the results are unreliable.\n\nReturn only the explanation text. No greeting or extra commentary."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1552,
+        16
+      ],
+      "id": "fde49dee-f3aa-4009-9250-f982e8b80d6d",
+      "name": "AI Agent",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const audit = $(\"Audit Security Headers — NGP-005\").first().json;\nconst ai = $json;\n\nconst chatId = audit.chatId;\nconst url = String(audit.url ?? \"\");\n\nconst score = audit.score ?? 0;\nconst total = audit.total ?? 5;\nconst verdict = audit.verdict ?? \"FAIL\";\n\n// 0-1 = red, 2-3 = orange, 4-5 = green\nconst severity =\n  score <= 1 ? \"red\" :\n  score <= 3 ? \"orange\" :\n  \"green\";\nconst icon = { red: \"🔴\", orange: \"🟠\", green: \"🟢\" }[severity];\n\nconst headerResults = audit.headerResults ?? [];\n\nconst headerLines = headerResults.map(h =>\n  `${h.present ? \"✅\" : \"❌\"} ${h.header}: ${h.present ? \"Present\" : \"Missing\"}`\n).join(\"\\n\");\n\nlet aiExplanation = String(\n  ai.output ??\n  ai.text ??\n  \"AI explanation unavailable. Review the missing-header fixes from the audit results.\"\n).trim();\nif (aiExplanation.length > 1200) aiExplanation = aiExplanation.slice(0, 1197) + \"...\";\n\nconst extra = [\n  audit.reachable === false ? \"⚠️ Target could not be reached - results may be inaccurate.\" : \"\",\n  audit.note ? `ℹ️ ${audit.note}` : \"\"\n].filter(Boolean).join(\"\\n\");\n\nconst message = `🛡️ NGP-005 Security Header Audit\n\nURL: ${url}\n\nScore: ${score}/${total}\nVerdict: ${String(verdict).toUpperCase()}\nSeverity: ${icon} ${severity.toUpperCase()}\n${extra ? \"\\n\" + extra + \"\\n\" : \"\"}\n${headerLines}\n\nAI Analysis:\n${aiExplanation}\n\nTag: NGP-005`;\n\nreturn {\n  json: {\n    chatId,\n    url,\n    severity,\n    score,\n    total,\n    verdict,\n    headerResults,\n    aiExplanation,\n    message,\n    tag: \"NGP-005\"\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1264,
+        176
+      ],
+      "id": "822f87d3-edd5-4386-a397-ed60b5f430b0",
+      "name": "Code — Format Telegram Reply"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Validate URL — NGP-005').first().json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -576,
+        -160
+      ],
+      "id": "b1be78bd-4f77-4897-a00e-f09c2d1c80f9",
+      "name": "Send a text message",
+      "webhookId": "4ee3d56f-22e7-442c-918c-9cc266ff5fa6",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxv8dWkQjbwOqEHI",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "red",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cb8e54d4-7b53-4a64-a5df-b89f3de8688b"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "655a8c9e-1e8d-41af-b756-6e518b76612e",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "orange",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "b4636900-ceee-44e1-aed0-72f9227d6b2d",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "green",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -784,
+        0
+      ],
+      "id": "7fbb2f8c-5045-487e-a819-4650ea4e3193",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Validate URL — NGP-005').first().json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -528,
+        48
+      ],
+      "id": "c77cfabf-e99d-486f-bef0-523cf44ae16f",
+      "name": "Send a text message1",
+      "webhookId": "5f1cf21a-7b98-4475-b99c-eb2081597263",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxv8dWkQjbwOqEHI",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Validate URL — NGP-005').first().json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -544,
+        240
+      ],
+      "id": "24ff1405-d8be-40c3-967d-a56c29f744b8",
+      "name": "Send a text message2",
+      "webhookId": "0636bf2d-bcec-4c21-9278-a2bc2b73fb14",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxv8dWkQjbwOqEHI",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $json;\n\nconst allowedSeverities = [\"red\", \"orange\", \"green\"];\nconst allowedVerdicts = [\"PASS\", \"FAIL\"];\nconst allowedHeaders = [\n  \"Content-Security-Policy\",\n  \"Strict-Transport-Security\",\n  \"X-Frame-Options\",\n  \"X-Content-Type-Options\",\n  \"Referrer-Policy\"\n];\n\nconst message = String(input.message ?? \"\");\n\nconst valid =\n  Number.isInteger(input.score) &&\n  input.score >= 0 &&\n  input.score <= 5 &&\n  allowedSeverities.includes(input.severity) &&\n  allowedVerdicts.includes(input.verdict) &&\n  input.tag === \"NGP-005\" &&\n  Number.isFinite(Number(input.chatId)) &&\n  message.length > 0 &&\n  message.length <= 3500 &&\n  allowedHeaders.every(header => message.includes(header));\n\nreturn {\n  json: {\n    ...input,\n    valid,\n    validationReason: valid\n      ? \"Output passed validation\"\n      : \"Output failed validation\",\n    validationAttempt: 1\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        16
+      ],
+      "id": "6198e67b-130b-4302-9fe9-fe7149c59bb5",
+      "name": "S3 — Validate Output"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "672f7fee-7dad-43f8-b605-280ea3d1f4e9",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -960,
+        160
+      ],
+      "id": "42151576-6597-4b06-a9bc-db6f9b1b9d5f",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1568,
+        240
+      ],
+      "id": "0f6baac5-43cd-4aed-868f-71975d132eab",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "TABIJ6dqRcBS8VFG",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const i = $json;\n\nconst lines = (i.headerResults ?? []).map(h =>\n  `${h.present ? \"✅\" : \"❌\"} ${h.header}: ${h.present ? \"Present\" : \"Missing\"}`\n).join(\"\\n\");\n\nconst message = `🛡️ NGP-005 Security Header Audit\n\nURL: ${i.url}\n\nScore: ${i.score}/${i.total}\nVerdict: ${String(i.verdict).toUpperCase()}\nSeverity: ${String(i.severity).toUpperCase()}\n\n${lines}\n\n⚠️ The AI analysis was skipped because the report failed validation.\n\nTag: NGP-005`;\n\nreturn { json: { ...i, message } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        368
+      ],
+      "id": "d1f66d8d-49e2-4cba-81b6-e71a502309fc",
+      "name": "Build Fallback Message"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Validate URL — NGP-005').first().json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -592,
+        480
+      ],
+      "id": "18ee12b2-3095-496b-9043-fc10e230c81e",
+      "name": "Send fallback message",
+      "webhookId": "ffbf3a45-f879-422d-b263-4d3c5b0a65f3",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxv8dWkQjbwOqEHI",
+          "name": "Telegram account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate URL — NGP-005",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Audit Security Headers — NGP-005",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate URL — NGP-005": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Security Headers — NGP-005": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Format Telegram Reply": {
+      "main": [
+        [
+          {
+            "node": "S3 — Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "S3 — Validate Output": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Fallback Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code — Format Telegram Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fallback Message": {
+      "main": [
+        [
+          {
+            "node": "Send fallback message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "35e9484f-2010-4320-8665-cabc10d02d34",
+  "meta": {
+    "instanceId": "6b5e65d4cf9d3e46dfe864ddfba52a78ce642747ac9e85f9f611b6b1facdf970"
+  },
+  "nodeGroups": [],
+  "id": "EfpOOnadeS8LyHl2",
+  "tags": []
+}
