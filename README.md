@@ -47,10 +47,6 @@ NGP-005 automates basic security-header checks for a given URL. It evaluates fiv
 6. **Output Validation** checks the generated report.
 7. **Severity Routing** sends the appropriate report through Telegram.
 
-## 🖼️ Workflow Preview
-
-![NGP-005 Workflow](screenshots/workflow-overview.png)
-
 ## 🚀 Setup and Usage
 
 **Requirements**
